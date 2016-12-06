@@ -4,6 +4,7 @@ USE_CUDNN = true;
 local mnist = require 'mnist'
 require 'nn'
 require 'optim'
+require 'nn_utils'
 
 -- helpers so we can run our code under CPU as well
 if USE_CUDA then
@@ -89,49 +90,6 @@ optimState = {
     learningRate = 0.01,
 }
 
---- ### Main evaluation + training function
-
-function forwardNet(data, labels, train)
-    timer = torch.Timer()
-
-    --another helpful function of optim is ConfusionMatrix
-    local confusion = optim.ConfusionMatrix(torch.range(0,9):totable())
-    local lossAcc = 0
-    if train then
-        model:training()
-    else 
-        model:evaluate()
-    end
-    for i = 1, data:size(1), batchSize do
-        local curBatchSize = math.min(batchSize, data:size(1) - i + 1)
-        local x = data:narrow(1, i, curBatchSize)
-        local yt = labels:narrow(1, i, curBatchSize)
-        local y = model:forward(x)
-        local err = criterion:forward(y, yt)
-        lossAcc = lossAcc + err*curBatchSize
-        confusion:batchAdd(y,yt)
-        
-        if train then
-            function feval()
-                model:zeroGradParameters() --zero grads
-                local dE_dy = criterion:backward(y,yt)
-                model:backward(x, dE_dy) -- backpropagation
-            
-                return err, dE_dw
-            end
-        
-            optim.sgd(feval, w, optimState)
-        end
-    end
-    
-    confusion:updateValids()
-    local avgLoss = lossAcc / data:size(1)
-    local avgError = 1 - confusion.totalValid
-    -- print(timer:time().real .. ' seconds')
-
-    return avgLoss, avgError, tostring(confusion)
-end
-
 
 --- ### Train the network on training set, evaluate on separate set
 
@@ -144,9 +102,9 @@ testError = torch.Tensor(epochs)
 
 for e = 1, epochs do
     trainData, trainLabels = shuffle(trainData, trainLabels) --shuffle training data
-    forwardNet(trainData, trainLabels, true) -- train the network
-    trainLoss[e], trainError[e] = forwardNet(trainData, trainLabels, false) -- evaluate on train
-    testLoss[e], testError[e], confusion = forwardNet(testData, testLabels, false) -- evaluate on test
+    forwardNet(model, trainData, trainLabels, true, batchSize, optimState, criterion) -- train the network
+    trainLoss[e], trainError[e] = forwardNet(model, trainData, trainLabels, false, batchSize, optimState, criterion) -- evaluate on train
+    testLoss[e], testError[e], confusion = forwardNet(model, testData, testLabels, false, batchSize, optimState, criterion) -- evaluate on test
     
     if e % 10 == 0 then
         print('Epoch ' .. e .. ':')
