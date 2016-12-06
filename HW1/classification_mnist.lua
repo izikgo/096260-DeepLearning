@@ -135,7 +135,7 @@ end
 
 --- ### Train the network on training set, evaluate on separate set
 
-epochs = 1000
+epochs = 600
 
 trainLoss = torch.Tensor(epochs)
 testLoss = torch.Tensor(epochs)
@@ -157,14 +157,23 @@ for e = 1, epochs do
    end
 end
 
+-- Save the model
+torch.save('mnist_model.dat', model)
+
 -- ********************* Plots *********************
 
 require 'gnuplot'
-local range = torch.range(1, epochs)
-gnuplot.pngfigure('test.png')
+gnuplot.pngfigure('Loss.png')
 gnuplot.logscale(true)
 gnuplot.plot({'trainLoss',trainLoss},{'testLoss',testLoss})
 gnuplot.xlabel('epochs')
 gnuplot.ylabel('Loss')
+gnuplot.plotflush()
+
+gnuplot.pngfigure('Error.png')
+gnuplot.logscale(true)
+gnuplot.plot({'trainError',trainError},{'testError',testError})
+gnuplot.xlabel('epochs')
+gnuplot.ylabel('Error')
 gnuplot.plotflush()
 
