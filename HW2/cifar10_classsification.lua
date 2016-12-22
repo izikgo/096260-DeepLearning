@@ -15,6 +15,7 @@ require 'image'
 require 'nn'
 require 'cunn'
 require 'cudnn'
+require 'hzproc'
 
 cudnn.benchmark = true
 cudnn.fastest = true
@@ -40,6 +41,21 @@ local testLabels = testset.label:float():add(1)
 --  Data Preprocessing
 --  ****************************************************************
 
+
+local function normalize(train_data, test_data, i)
+	local train_mean = train_data[{ {}, i, {}, {}}]:mean()
+	local train_std = train_data[{ {}, i, {}, {}}]:std()
+	train_data[{ {}, i, {}, {}}]:add(-train_mean)
+	train_data[{ {}, i, {}, {}}]:div(train_std)
+	test_data[{ {}, i, {}, {}}]:add(-train_mean)
+	test_data[{ {}, i, {}, {}}]:div(train_std)
+end
+
+print("Normalizing data...")
+for i = 1, 3 do
+	normalize(trainData, testData, i)
+end
+print("Done")
 -- convert to YUV and normalize
 
 
@@ -47,11 +63,26 @@ local testLabels = testset.label:float():add(1)
 --  Define our neural network
 --  ****************************************************************
 
+local function He_init(net)
+  local function init(name)
+    for k,v in pairs(net:findModules(name)) do
+      print(k)
+      local n = v.kW*v.kH*v.nInputPlane
+      v.weight:normal(0, math.sqrt(2/n))
+	  if v.bias then v.bias:zero() end
+    end
+  end
+  init('nn.SpatialConvolution')
+end
+
+--[[
 local function addConvBlockFMP(model, nInput, nFilter, size, poolingRatio)
 	model:add(nn.SpatialConvolution(nInput, nFilter, size, size))
+	model:add(nn.SpatialBatchNormalization(nFilter, 1e-3))
 	model:add(nn.SpatialFractionalMaxPooling(2, 2, poolingRatio, poolingRatio))
 	model:add(nn.LeakyReLU(0.3, true))
 end
+]]
 
 local function calcNumberOfFilters(nLayer)
 	local filterBase = 8
@@ -59,54 +90,7 @@ local function calcNumberOfFilters(nLayer)
 	return filterBase + filterAdd * (nLayer - 1)
 end
 
-inputSize = 128
-nConvLayers = 9
--- filtersBase = 10
--- filterAdd = 5
-poolingRatio = 1 / math.pow(2, 1/3)
-
-local model = nn.Sequential()
-
-addConvBlockFMP(model, 3, calcNumberOfFilters(1), 2, poolingRatio)
-for l = 2, nConvLayers do
-	addConvBlockFMP(model, calcNumberOfFilters(l - 1), calcNumberOfFilters(l), 2, poolingRatio)
-end
-
-model:add(nn.SpatialConvolution(calcNumberOfFilters(nConvLayers), calcNumberOfFilters(nConvLayers), 2, 2))
-model:add(nn.SpatialFractionalMaxPooling(2, 2, 1 / math.pow(2, 0.5), 1 / math.pow(2, 0.5)))
-model:add(nn.SpatialConvolution(calcNumberOfFilters(nConvLayers), calcNumberOfFilters(nConvLayers), 1, 1))
-model:add(nn.SpatialFractionalMaxPooling(2, 2, 1 / math.pow(2, 0.5), 1 / math.pow(2, 0.5)))
-model:add(nn.View(-1):setNumInputDims(3))
-
-nElementsConv = model:forward(torch.rand(3, inputSize, inputSize)):nElement()
-
-model:add(nn.Linear(nElementsConv, #classes))
-
-model:cuda()
-
-cudnn.convert(model, cudnn)
-criterion = nn.CrossEntropyCriterion():cuda()
-
-
-w, dE_dw = model:getParameters()
-print('Number of parameters:', w:nElement())
-print(model)
-
---[[
-function shuffle(data,ydata) --shuffle data function
-    local RandOrder = torch.randperm(data:size(1)):long()
-    return data:index(1,RandOrder), ydata:index(1,RandOrder)
-end
-
---  ****************************************************************
---  Training the network
---  ****************************************************************
-require 'optim'
-
-local batchSize = 128
-local optimState = {}
-
-function forwardNet(data,labels, train)
+function forwardNet(model, data, labels, train)
     --another helpful function of optim is ConfusionMatrix
     local confusion = optim.ConfusionMatrix(classes)
     local lossAcc = 0
@@ -156,25 +140,102 @@ function plotError(trainError, testError, title)
 	gnuplot.plotflush()
 end
 
+model = nn.Sequential()
+-- building block
+local function ConvBNReLU(...)
+	local arg = {...}
+	model:add(nn.SpatialConvolution(...))
+	model:add(nn.SpatialBatchNormalization(arg[2], 1e-3))
+	model:add(nn.ReLU(true))
+	return model
+end
+
+smallLayer = 16
+mediumLayer = 32
+largeLayer = 64
+XlargeLayer = 128
+
+------------------------------------------------------
+ConvBNReLU(3, XlargeLayer, 3, 3, 1, 1, 1, 1)
+--model:add(nn.Dropout(0.1))
+
+ConvBNReLU(XlargeLayer, largeLayer, 1, 1)
+ConvBNReLU(largeLayer, smallLayer, 1, 1)
+model:add(nn.Dropout(0.2))
+
+model:add(nn.SpatialAveragePooling(3, 3, 2, 2))
+--------------------------------------------------
+ConvBNReLU(smallLayer, XlargeLayer, 2, 2, 1, 1, 1, 1)
+--model:add(nn.Dropout(0.2))
+
+ConvBNReLU(XlargeLayer, largeLayer, 1, 1)
+ConvBNReLU(largeLayer, mediumLayer, 1, 1)
+model:add(nn.Dropout(0.3))
+
+model:add(nn.SpatialAveragePooling(3,3,2,2))
+----------------------------------------------------
+ConvBNReLU(mediumLayer, largeLayer, 2, 2, 1, 1, 1, 1)
+--model:add(nn.Dropout(0.3))
+
+ConvBNReLU(largeLayer, mediumLayer, 1, 1)
+model:add(nn.Dropout(0.4))
+
+model:add(nn.SpatialAveragePooling(3,3,2,2))
+----------------------------------------------------
+ConvBNReLU(mediumLayer, mediumLayer, 2, 2, 1, 1, 1, 1)
+--model:add(nn.Dropout(0.4))
+
+ConvBNReLU(mediumLayer, smallLayer, 1, 1)
+model:add(nn.Dropout(0.5))
+
+--model:add(nn.SpatialAveragePooling(2,2,2,2))
+-----------------------------------------------------
+print(model:forward(torch.rand(1, 3, 32, 32)):size())
+
+ConvBNReLU(smallLayer, 8, 1, 1)
+model:add(nn.View(8*4*4))
+model:add(nn.Linear(8*4*4, 10))
+
+He_init(model)
+
+cudnn.convert(model, cudnn):cuda()
+criterion = nn.CrossEntropyCriterion():cuda()
+
+
+w, dE_dw = model:getParameters()
+print('Number of parameters:', w:nElement())
+print(model)
+
+
+function shuffle(data,ydata) --shuffle data function
+    local RandOrder = torch.randperm(data:size(1)):long()
+    return data:index(1,RandOrder), ydata:index(1,RandOrder)
+end
+
+--  ****************************************************************
+--  Training the network
+--  ****************************************************************
+require 'optim'
+
+batchSize = 128
+optimState = {}
+
+
+
 ---------------------------------------------------------------------
 
-epochs = 25
+epochs = 500
 trainLoss = torch.Tensor(epochs)
 testLoss = torch.Tensor(epochs)
 trainError = torch.Tensor(epochs)
 testError = torch.Tensor(epochs)
 
---reset net weights
-model:apply(function(l) l:reset() end)
-
-timer = torch.Timer()
-
 for e = 1, epochs do
     trainData, trainLabels = shuffle(trainData, trainLabels) --shuffle training data
-    trainLoss[e], trainError[e] = forwardNet(trainData, trainLabels, true)
-    testLoss[e], testError[e], confusion = forwardNet(testData, testLabels, false)
+    trainLoss[e], trainError[e] = forwardNet(model, trainData, trainLabels, true)
+    testLoss[e], testError[e], confusion = forwardNet(model, testData, testLabels, false)
     
-    if e % 5 == 0 then
+    if e % 2 == 0 then
         print('Epoch ' .. e .. ':')
         print('Training error: ' .. trainError[e], 'Training Loss: ' .. trainLoss[e])
         print('Test error: ' .. testError[e], 'Test Loss: ' .. testLoss[e])
@@ -185,24 +246,4 @@ end
 plotError(trainError, testError, 'Classification Error')
 
 
---  ****************************************************************
---  Network predictions
---  ****************************************************************
-
-
-model:evaluate()   --turn off dropout
-
-print(classes[testLabels[10] ])
-print(testData[10]:size())
-saveTensorAsGrid(testData[10],'testImg10.jpg')
-local predicted = model:forward(testData[10]:view(1,3,32,32):cuda())
-print(predicted:exp()) -- the output of the network is Log-Probabilities. To convert them to probabilities, you have to take e^x 
-
--- assigned a probability to each classes
-for i=1,predicted:size(2) do
-    print(classes[i],predicted[1][i])
-end
-
-
-]]
 
