@@ -58,6 +58,46 @@ end
 print("Done")
 -- convert to YUV and normalize
 
+--  ****************************************************************
+--  Data Augmetation
+--  ****************************************************************
+do -- data augmentation module
+  local DataAugmentation,parent = torch.class('nn.DataAugmentation', 'nn.Module')
+
+  function DataAugmentation:__init()
+    parent.__init(self)
+    self.train = true
+  end
+
+  function DataAugmentation:updateOutput(input)
+    if self.train then
+		local img_size = input[1]:size(2)  -- assume square inputs
+		for i=1,input:size(1) do
+			if torch.bernoulli() == 1 then  -- Random cropping
+				local size = torch.random(img_size / 2, img_size - 1)
+				local x1, y1 = torch.random(0, img_size - size), torch.random(0, img_size - size)
+				input[i] = hzproc.Crop.Fast(input[i], img_size, img_size, x1, y1, x1 + size, y1 + size)
+			end
+			if torch.bernoulli() == 1 then  -- horizontal flip
+				input[i] = hzproc.Flip.Horizon(input[i])
+			end
+			if torch.bernoulli() == 1 then  -- random shear
+				local r = torch.rand(2)
+				local sx, sy = r[{1}], r[{2}]
+				local mat = hzproc.Affine.Shear(sx, sy) 
+				input[i] = hzproc.Transform.Fast(input[i], mat)
+			end
+			if torch.bernoulli() == 1 then  -- random rotation
+				local theta = (2*torch.rand(1)[{1}] - 1) * math.pi/4
+				local mat = hzproc.Affine.Rotate(theta)
+				input[i] = hzproc.Transform.Fast(input[i], mat)
+			end
+		end		
+    end
+    self.output:set(input)
+    return self.output
+  end
+end
 
 --  ****************************************************************
 --  Define our neural network
@@ -66,7 +106,6 @@ print("Done")
 local function He_init(net)
   local function init(name)
     for k,v in pairs(net:findModules(name)) do
-      print(k)
       local n = v.kW*v.kH*v.nInputPlane
       v.weight:normal(0, math.sqrt(2/n))
 	  if v.bias then v.bias:zero() end
@@ -74,15 +113,6 @@ local function He_init(net)
   end
   init('nn.SpatialConvolution')
 end
-
---[[
-local function addConvBlockFMP(model, nInput, nFilter, size, poolingRatio)
-	model:add(nn.SpatialConvolution(nInput, nFilter, size, size))
-	model:add(nn.SpatialBatchNormalization(nFilter, 1e-3))
-	model:add(nn.SpatialFractionalMaxPooling(2, 2, poolingRatio, poolingRatio))
-	model:add(nn.LeakyReLU(0.3, true))
-end
-]]
 
 local function calcNumberOfFilters(nLayer)
 	local filterBase = 8
@@ -141,6 +171,8 @@ function plotError(trainError, testError, title)
 end
 
 model = nn.Sequential()
+model:add(nn.DataAugmentation())
+
 -- building block
 local function ConvBNReLU(...)
 	local arg = {...}
@@ -157,7 +189,6 @@ XlargeLayer = 128
 
 ------------------------------------------------------
 ConvBNReLU(3, XlargeLayer, 3, 3, 1, 1, 1, 1)
---model:add(nn.Dropout(0.1))
 
 ConvBNReLU(XlargeLayer, largeLayer, 1, 1)
 ConvBNReLU(largeLayer, smallLayer, 1, 1)
@@ -166,7 +197,6 @@ model:add(nn.Dropout(0.2))
 model:add(nn.SpatialAveragePooling(3, 3, 2, 2))
 --------------------------------------------------
 ConvBNReLU(smallLayer, XlargeLayer, 2, 2, 1, 1, 1, 1)
---model:add(nn.Dropout(0.2))
 
 ConvBNReLU(XlargeLayer, largeLayer, 1, 1)
 ConvBNReLU(largeLayer, mediumLayer, 1, 1)
@@ -175,7 +205,6 @@ model:add(nn.Dropout(0.3))
 model:add(nn.SpatialAveragePooling(3,3,2,2))
 ----------------------------------------------------
 ConvBNReLU(mediumLayer, largeLayer, 2, 2, 1, 1, 1, 1)
---model:add(nn.Dropout(0.3))
 
 ConvBNReLU(largeLayer, mediumLayer, 1, 1)
 model:add(nn.Dropout(0.4))
@@ -183,14 +212,11 @@ model:add(nn.Dropout(0.4))
 model:add(nn.SpatialAveragePooling(3,3,2,2))
 ----------------------------------------------------
 ConvBNReLU(mediumLayer, mediumLayer, 2, 2, 1, 1, 1, 1)
---model:add(nn.Dropout(0.4))
 
 ConvBNReLU(mediumLayer, smallLayer, 1, 1)
 model:add(nn.Dropout(0.5))
 
---model:add(nn.SpatialAveragePooling(2,2,2,2))
 -----------------------------------------------------
-print(model:forward(torch.rand(1, 3, 32, 32)):size())
 
 ConvBNReLU(smallLayer, 8, 1, 1)
 model:add(nn.View(8*4*4))
