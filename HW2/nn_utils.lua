@@ -1,3 +1,5 @@
+local classes = {'airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck'}
+
 function forwardNet(model, data, labels, batchSize)
     --another helpful function of optim is ConfusionMatrix
     local confusion = optim.ConfusionMatrix(classes)
@@ -11,7 +13,7 @@ function forwardNet(model, data, labels, batchSize)
         local x = data:narrow(1, i, batchSize):cuda()
         local yt = labels:narrow(1, i, batchSize):cuda()
         local y = model:forward(x)
-        local err = criterion:forward(y, yt)
+        local err = nn.CrossEntropyCriterion():cuda():forward(y, yt)
         lossAcc = lossAcc + err
         confusion:batchAdd(y,yt)
     end
@@ -56,10 +58,11 @@ function getAverageErrorOnTest()
 		normalize(trainData, testData, i)
 	end
 	
-    local model = torch.load('cifar10_model.dat')
+    local model = torch.load('cifar10_model_85.5.dat')
     local batchSize = 128
 
     testLoss, testError = forwardNet(model, testData, testLabels, batchSize, optimState, criterion) -- evaluate on test
     return testError
 end
+
 
