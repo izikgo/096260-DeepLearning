@@ -111,63 +111,46 @@ class DoubleConv2D(Conv2D):
         self.effective_kernel_size = effective_kernel_size
         self.pool_size = pool_size
 
-    def get_effective_kernel(self):
-        meta_kernel_h, meta_kernel_w, input_depth, n_filters = K.get_variable_shape(self.kernel)
-        effective_kernel = K.get_image_patches(K.permute_dimensions(self.kernel, (3, 0, 1, 2)),
-                                               self.effective_kernel_size)
-        effective_kernel = K.reshape(effective_kernel, (-1,) + self.effective_kernel_size + (input_depth,) )
-        effective_kernel = K.permute_dimensions(effective_kernel, (1, 2, 3, 0))
-        return effective_kernel
-
-        # meta_kernel_h, meta_kernel_w, input_depth, n_filters = K.get_variable_shape(self.kernel)
-        # effective_kernel_h, effective_kernel_w = self.effective_kernel_size
-        # meta_kernel = K.permute_dimensions(self.kernel, (3, 0, 1, 2))  # make n_filters first dimension
-        # I = K.eye(input_depth * effective_kernel_h * effective_kernel_w)
-        # I = K.reshape(I, (effective_kernel_h, effective_kernel_w, input_depth,
-        #               input_depth * effective_kernel_h * effective_kernel_w))
-        #
-        # effective_kernel = K.conv2d(meta_kernel, I)
-        # offset_h = meta_kernel_h - effective_kernel_h + 1
-        # offset_w = meta_kernel_w - effective_kernel_w + 1
-        # # shape is now (n_filters, offset_h, offset_w, input_depth * effective_kernel_h * effective_kernel_w)
-        #
-        # effective_kernel = K.reshape(effective_kernel, ((n_filters * offset_h * offset_w,
-        #                                                  input_depth, effective_kernel_h, effective_kernel_w)))
-        # effective_kernel = K.permute_dimensions(effective_kernel, (2, 3, 1, 0))
-        #
-        # return effective_kernel
-
     def call(self, inputs):
-        effective_kernel = self.get_effective_kernel()
-
+        patches = K.get_image_patches(inputs, self.effective_kernel_size)
+        input_shape = K.get_variable_shape(inputs)
         if self.data_format == 'channels_first':
-            batch_size, n_filters, rows, cols = self.compute_output_shape(K.get_variable_shape(inputs))
+            n_ch = input_shape[0]
+            rows = input_shape[2]
+            cols = input_shape[3]
         elif self.data_format == 'channels_last':
-            batch_size, rows, cols, n_filters = self.compute_output_shape(K.get_variable_shape(inputs))
-            inputs = K.permute_dimensions(inputs, (0, 3, 1, 2))  # change to channels first
+            rows = input_shape[1]
+            cols = input_shape[2]
+            n_ch = input_shape[3]
 
-        outputs = K.conv2d(
-            inputs,
-            effective_kernel,
-            strides=self.strides,
-            padding=self.padding,
-            data_format='channels_first',
-            dilation_rate=self.dilation_rate)
+        # After the reshape, patches will be with shape:
+        # `(batch_size * num_patches, effective_kernel_rows, effective_kernel_cols, n_in_channels)`
+        patches = K.reshape(
+            patches,
+            (-1, self.effective_kernel_size[0], self.effective_kernel_size[1], n_ch)
+        )
+        # After permute_dimensions, patches will be with shape:
+        # `(effective_kernel_rows, effective_kernel_cols, n_in_channels, batch_size * num_patches)`
+        patches = K.permute_dimensions(patches, (1, 2, 3, 0))
 
+        meta_kernel_h, meta_kernel_w, input_depth, n_filters = K.get_variable_shape(self.kernel)
+        meta_kernel = K.permute_dimensions(self.kernel, (3, 0, 1, 2))  # make n_filters first dimension
+
+        # Now meta_kernel acts as image and the patches as filters.
+        # result will be of shape `(n_filters, 1, offset_h, offset_w, batch_size)`
         offset_h = self.kernel_size[0] - self.effective_kernel_size[0] + 1
         offset_w = self.kernel_size[1] - self.effective_kernel_size[1] + 1
+        outputs = K.conv2d(meta_kernel, patches, data_format='channels_last')
+        outputs = K.permute_dimensions(outputs, (3, 1, 2, 0))
+        #  Outputs shape is now `(batch_size * patches, n_filters, offset_h, offset_w)`
 
-        outputs = K.permute_dimensions(outputs, (0, 2, 3, 1))
-
-        outputs = K.reshape(outputs, (-1, rows * cols * self.filters, offset_h, offset_w))
-
-        outputs = K.pool2d(outputs, self.pool_size, data_format='channels_first')
-
-        outputs = K.permute_dimensions(outputs, (0, 2, 3, 1))
-        outputs = K.reshape(outputs, (-1, n_filters, rows, cols))
-
-        if self.data_format == 'channels_last':
-            outputs = K.permute_dimensions(outputs, (0, 2, 3, 1))  # return to channels last
+        outputs = K.pool2d(outputs, self.pool_size, data_format='channels_last')
+        num_patches_h = rows - self.effective_kernel_size[0] + 1
+        num_patches_w = cols - self.effective_kernel_size[1] + 1
+        outputs = K.reshape(outputs, (-1, num_patches_h, num_patches_w,
+                                      n_filters * (offset_h // self.pool_size[0]) * (offset_w // self.pool_size[1])
+                                      )
+                            )
 
         if self.bias:
             outputs = K.bias_add(
@@ -207,11 +190,5 @@ class DoubleConv2D(Conv2D):
         config.pop('kernel_initializer')
         config.pop('kernel_regularizer')
         config.pop('kernel_constraint')
-        # config['depthwise_initializer'] = initializers.serialize(self.depthwise_initializer)
-        # config['pointwise_initializer'] = initializers.serialize(self.pointwise_initializer)
-        # config['depthwise_regularizer'] = regularizers.serialize(self.depthwise_regularizer)
-        # config['pointwise_regularizer'] = regularizers.serialize(self.pointwise_regularizer)
-        # config['depthwise_constraint'] = constraints.serialize(self.depthwise_constraint)
-        # config['pointwise_constraint'] = constraints.serialize(self.pointwise_constraint)
         return config
 

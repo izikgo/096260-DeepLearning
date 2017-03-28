@@ -3,14 +3,6 @@ from keras.utils import conv_utils
 from keras import backend as K
 
 
-# For now, we introduce support for the improved implementation only for the `tensorflow` backend
-if K.backend() == "tensorflow":
-    def get_image_patches(images, psize):
-        return K.tf.extract_image_patches(images, (1,) + psize + (1,), (1, 1, 1, 1), (1, 1, 1, 1), 'VALID')
-
-    K.get_image_patches = get_image_patches
-
-
 class DoubleConv2D(Conv2D):
     """Double 2D convolution.
 
@@ -113,29 +105,22 @@ class DoubleConv2D(Conv2D):
 
     def get_effective_kernel(self):
         meta_kernel_h, meta_kernel_w, input_depth, n_filters = K.get_variable_shape(self.kernel)
-        effective_kernel = K.get_image_patches(K.permute_dimensions(self.kernel, (3, 0, 1, 2)),
-                                               self.effective_kernel_size)
-        effective_kernel = K.reshape(effective_kernel, (-1,) + self.effective_kernel_size + (input_depth,) )
-        effective_kernel = K.permute_dimensions(effective_kernel, (1, 2, 3, 0))
-        return effective_kernel
+        effective_kernel_h, effective_kernel_w = self.effective_kernel_size
+        meta_kernel = K.permute_dimensions(self.kernel, (3, 0, 1, 2))  # make n_filters first dimension
+        I = K.eye(input_depth * effective_kernel_h * effective_kernel_w)
+        I = K.reshape(I, (effective_kernel_h, effective_kernel_w, input_depth,
+                      input_depth * effective_kernel_h * effective_kernel_w))
 
-        # meta_kernel_h, meta_kernel_w, input_depth, n_filters = K.get_variable_shape(self.kernel)
-        # effective_kernel_h, effective_kernel_w = self.effective_kernel_size
-        # meta_kernel = K.permute_dimensions(self.kernel, (3, 0, 1, 2))  # make n_filters first dimension
-        # I = K.eye(input_depth * effective_kernel_h * effective_kernel_w)
-        # I = K.reshape(I, (effective_kernel_h, effective_kernel_w, input_depth,
-        #               input_depth * effective_kernel_h * effective_kernel_w))
-        #
-        # effective_kernel = K.conv2d(meta_kernel, I)
-        # offset_h = meta_kernel_h - effective_kernel_h + 1
-        # offset_w = meta_kernel_w - effective_kernel_w + 1
-        # # shape is now (n_filters, offset_h, offset_w, input_depth * effective_kernel_h * effective_kernel_w)
-        #
-        # effective_kernel = K.reshape(effective_kernel, ((n_filters * offset_h * offset_w,
-        #                                                  input_depth, effective_kernel_h, effective_kernel_w)))
-        # effective_kernel = K.permute_dimensions(effective_kernel, (2, 3, 1, 0))
-        #
-        # return effective_kernel
+        effective_kernel = K.conv2d(meta_kernel, I)
+        offset_h = meta_kernel_h - effective_kernel_h + 1
+        offset_w = meta_kernel_w - effective_kernel_w + 1
+        # shape is now (n_filters, offset_h, offset_w, input_depth * effective_kernel_h * effective_kernel_w)
+
+        effective_kernel = K.reshape(effective_kernel, ((n_filters * offset_h * offset_w,
+                                                         input_depth, effective_kernel_h, effective_kernel_w)))
+        effective_kernel = K.permute_dimensions(effective_kernel, (2, 3, 1, 0))
+
+        return effective_kernel
 
     def call(self, inputs):
         effective_kernel = self.get_effective_kernel()
@@ -207,11 +192,5 @@ class DoubleConv2D(Conv2D):
         config.pop('kernel_initializer')
         config.pop('kernel_regularizer')
         config.pop('kernel_constraint')
-        # config['depthwise_initializer'] = initializers.serialize(self.depthwise_initializer)
-        # config['pointwise_initializer'] = initializers.serialize(self.pointwise_initializer)
-        # config['depthwise_regularizer'] = regularizers.serialize(self.depthwise_regularizer)
-        # config['pointwise_regularizer'] = regularizers.serialize(self.pointwise_regularizer)
-        # config['depthwise_constraint'] = constraints.serialize(self.depthwise_constraint)
-        # config['pointwise_constraint'] = constraints.serialize(self.pointwise_constraint)
         return config
 

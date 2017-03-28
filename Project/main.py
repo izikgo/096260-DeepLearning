@@ -10,7 +10,7 @@ import keras
 from keras.datasets import mnist
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Flatten
-from keras.layers import MaxPooling2D#, Conv2D
+from keras.layers import MaxPooling2D
 from keras import backend as K
 from doubly_convolutional import DoubleConv2D as Conv2D
 
