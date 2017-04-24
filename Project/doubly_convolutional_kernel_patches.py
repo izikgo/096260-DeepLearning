@@ -111,7 +111,7 @@ class DoubleConv2D(Conv2D):
         I = K.reshape(I, (effective_kernel_h, effective_kernel_w, input_depth,
                       input_depth * effective_kernel_h * effective_kernel_w))
 
-        effective_kernel = K.conv2d(meta_kernel, I)
+        effective_kernel = K.conv2d(meta_kernel, I, data_format='channels_last')
         offset_h = meta_kernel_h - effective_kernel_h + 1
         offset_w = meta_kernel_w - effective_kernel_w + 1
         # shape is now (n_filters, offset_h, offset_w, input_depth * effective_kernel_h * effective_kernel_w)

@@ -115,27 +115,11 @@ class DoubleConv2D(Conv2D):
         meta_kernel_h, meta_kernel_w, input_depth, n_filters = K.get_variable_shape(self.kernel)
         effective_kernel = K.get_image_patches(K.permute_dimensions(self.kernel, (3, 0, 1, 2)),
                                                self.effective_kernel_size)
+        # shape is now (n_filters, offset_h, offset_w, input_depth * effective_kernel_h * effective_kernel_w)
+
         effective_kernel = K.reshape(effective_kernel, (-1,) + self.effective_kernel_size + (input_depth,) )
         effective_kernel = K.permute_dimensions(effective_kernel, (1, 2, 3, 0))
         return effective_kernel
-
-        # meta_kernel_h, meta_kernel_w, input_depth, n_filters = K.get_variable_shape(self.kernel)
-        # effective_kernel_h, effective_kernel_w = self.effective_kernel_size
-        # meta_kernel = K.permute_dimensions(self.kernel, (3, 0, 1, 2))  # make n_filters first dimension
-        # I = K.eye(input_depth * effective_kernel_h * effective_kernel_w)
-        # I = K.reshape(I, (effective_kernel_h, effective_kernel_w, input_depth,
-        #               input_depth * effective_kernel_h * effective_kernel_w))
-        #
-        # effective_kernel = K.conv2d(meta_kernel, I)
-        # offset_h = meta_kernel_h - effective_kernel_h + 1
-        # offset_w = meta_kernel_w - effective_kernel_w + 1
-        # # shape is now (n_filters, offset_h, offset_w, input_depth * effective_kernel_h * effective_kernel_w)
-        #
-        # effective_kernel = K.reshape(effective_kernel, ((n_filters * offset_h * offset_w,
-        #                                                  input_depth, effective_kernel_h, effective_kernel_w)))
-        # effective_kernel = K.permute_dimensions(effective_kernel, (2, 3, 1, 0))
-        #
-        # return effective_kernel
 
     def call(self, inputs):
         effective_kernel = self.get_effective_kernel()
@@ -157,17 +141,20 @@ class DoubleConv2D(Conv2D):
         offset_h = self.kernel_size[0] - self.effective_kernel_size[0] + 1
         offset_w = self.kernel_size[1] - self.effective_kernel_size[1] + 1
 
-        outputs = K.permute_dimensions(outputs, (0, 2, 3, 1))
+        outputs = K.permute_dimensions(outputs, (0, 2, 3, 1))  # now channels last
 
-        outputs = K.reshape(outputs, (-1, rows * cols * self.filters, offset_h, offset_w))
+        if (offset_h, offset_w) == self.pool_size:
+            # Faster implementation if pooling on all the sub-kernels
+            outputs = K.reshape(outputs, (-1, rows, cols, self.filters, offset_h * offset_w))
+            outputs = K.max(outputs, axis=-1)
+        else:
+            outputs = K.reshape(outputs, (-1, rows * cols * self.filters, offset_h, offset_w))
+            outputs = K.pool2d(outputs, self.pool_size, data_format='channels_first')  # we put `channels_first` to pool
+                                                                                       # on the offsets
+            outputs = K.reshape(outputs, (-1, rows, cols, n_filters))
 
-        outputs = K.pool2d(outputs, self.pool_size, data_format='channels_first')
-
-        outputs = K.permute_dimensions(outputs, (0, 2, 3, 1))
-        outputs = K.reshape(outputs, (-1, n_filters, rows, cols))
-
-        if self.data_format == 'channels_last':
-            outputs = K.permute_dimensions(outputs, (0, 2, 3, 1))  # return to channels last
+        if self.data_format == 'channels_first':
+            outputs = K.permute_dimensions(outputs, (0, 3, 1, 2))  # now channels first
 
         if self.bias:
             outputs = K.bias_add(
